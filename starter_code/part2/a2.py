@@ -113,14 +113,55 @@ class Markus:
         is not considered to be "after" that because it is not due on a later
         day.
         """
-        # TODO - complete this method
+        student_query = """
+            SELECT username
+            FROM MarkusUser
+            WHERE username = %s AND type = 'student'
+        """
+        delete_solo_groups = """
+            DELETE FROM AssignmentGroup AS g
+            USING Assignment AS a
+            WHERE a.assignment_id = g.assignment_id
+              AND a.due_date::date > %s
+              AND EXISTS (
+                  SELECT 1 FROM Membership AS m
+                  WHERE m.group_id = g.group_id AND m.username = %s
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM Membership AS m
+                  WHERE m.group_id = g.group_id AND m.username <> %s
+              )
+        """
+        delete_other_memberships = """
+            DELETE FROM Membership AS m
+            USING AssignmentGroup AS g, Assignment AS a
+            WHERE m.group_id = g.group_id
+              AND g.assignment_id = a.assignment_id
+              AND m.username = %s
+              AND a.due_date::date > %s
+        """
 
         try:
-            pass
-        except pg.Error as ex:
-            # You may find it helpful to uncomment this line while debugging,
-            # as it will show you all the details of the error that occurred:
-            # raise ex
+            if self.connection is None or self.connection.closed:
+                return -1
+
+            with self.connection:
+                with self.connection.cursor() as cursor:
+                    cursor.execute(student_query, (username,))
+                    if cursor.fetchone() is None:
+                        return -1
+
+                    # Delete empty groups and their dependent rows by cascade.
+                    cursor.execute(delete_solo_groups,
+                                   (date, username, username))
+                    removed = cursor.rowcount
+
+                    # Keep nonempty groups, even below group_min.
+                    cursor.execute(delete_other_memberships,
+                                   (username, date))
+                    removed += cursor.rowcount
+            return removed
+        except pg.Error:
             return -1
 
     def create_groups(
